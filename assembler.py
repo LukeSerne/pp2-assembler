@@ -7,34 +7,6 @@ import re
 import base
 import parser
 
-# Section 4.4
-BinaryInstructions = [
-    "LOAD", "ADD", "SUB", "CMP", "MULS", "MULL", "CHCK", "DIV", "MOD", "DVMOD",
-    "AND", "OR", "XOR", "STOR"
-]
-
-# Section 4.5
-UnaryInstructions = [
-    "JMP", "JSR", "CLRI", "SETI", "PSEM", "VSEM"
-]
-
-# Section 4.6
-BranchInstructions = [
-    "BRA", "BRS", "BEQ", "BNE", "BCS", "BCC", "BLS", "BHI", "BVC", "BVS", "BPL",
-    "BMI", "BLT", "BGE", "BLE", "BGT"
-]
-
-# Section 4.7
-...
-
-# Section 4.8
-MiscInstructions = [
-    "RTS", "RTE", "PUSH", "PULL"
-]
-
-# ...
-EffectiveUnary = UnaryInstructions + BranchInstructions + ["PUSH", "PULL", "CONS"]
-
 class Assembler:
     def __init__(self, input_, output_, verbose_):
         self.input = input_
@@ -44,17 +16,18 @@ class Assembler:
     def assemble(self):
         # read input file
         with open(self.input, 'r') as f:
-            in_ = f.readlines()
+            content = f.read()
 
         # parse input
-        # returns list of tokens. Replaces all EQU instances and changes SP and
-        # GB to r7 and r6
-        self.parser = parser.Parser(in_)
+        self.parser = parser.Parser(content)
 
+        # parses the code and data sections
         self.parser.parseSections()
 
         # first do the code segment
         self.assembleCode()
+
+        # TODO: the data segment
 
     def assembleCode(self):
         segcode = self.parser.code

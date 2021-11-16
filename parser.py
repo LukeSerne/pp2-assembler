@@ -1,4 +1,17 @@
+import typing
+import re
+
 import base
+
+class Segment:
+    _content: list[tuple]
+
+    def __init__(self):
+        self._content = []
+
+    def add(self, arg):
+        self._content.append(arg)
+
 
 class Parser:
     def __init__(self, input_):
@@ -12,335 +25,416 @@ class Parser:
     def parseSections(self):
         # process the file line by line
         segment = None
-        self.aliases = dict()
-        self.datapoints = dict()
+        self.aliases = {}
+        self.data = {}
 
-        for line in self.input:
-            # ignore everything after ;
-            line = line.split(';')[0]
+        segment = None  # 'code', 'data' or None
+        tokens = Segment()
+        data_addr = 0
 
-            # split line into tokens separated by whitespace, be careful, because
-            # we don't want any spaces inside [] to be split. So, first split on
-            # [
-            tokens = line.split('[')
-            if len(tokens) > 1:
-                ind = tokens[1].split('+')
+        # Tokenise based on spaces
+        for line in self.input.split("\n"):
+            if ";" in line:
+                line = line[:line.index(";")]
 
-                # strip everything after ]
-                ind[-1] = ind[-1].split(']')[0]
+            line = line.strip()
+            if not line:
+                continue
 
-                if ind:
-                    # a + was found and removed, so add it back in
-                    ind = [ind[0].rstrip(), '+', ind[1].lstrip()]
-
-                tokens = tokens[0].split()
-                tokens.append(ind)
-            else:
-                tokens = tokens[0].split()
-
-            if '@CODE' in tokens:
-                if segment == 'code':
-                    raise ValueError('CODE segment can only be started once')
-
-                i = tokens.index('@CODE')
-
-                if i + 1 < len(tokens):
-                    addr = self.getValue(tokens[i + 1])
+            if line.startswith("@"):
+                if "=" in line:
+                    name, value = line.split("=")
+                    name = name.strip()
+                    value = value.strip()
                 else:
-                    addr = 0x3ffff
+                    name, value = line, None
 
-                # length is to be calculated later
-                len_ = None
-                self.code = [['@C', addr, len_]]
+                if name == "@CODE":
+                    segment = "code"
 
-                segment = 'code'
-
-            elif '@DATA' in tokens:
-                if segment == 'data':
-                    raise ValueError('DATA segment can only be started once')
-
-                i = tokens.index('@DATA')
-
-                if i + 1 < len(tokens):
-                    addr = self.getValue(tokens[i + 1])
-                else:
-                    addr = 0x3ffff
-
-                # length is to be calculated later
-                len_ = None
-                self.data = [['@D', addr, len_]]
-                address = 0
-                curdatapoint = -1
-                defining = None
-
-                segment = 'data'
-
-            elif '@END' in tokens:
-                break
-
-            elif '@INCLUDE' in tokens:
-                raise NotImplementedError("Include statements are not yet supported.")
-
-            elif tokens:
-                if segment == 'data':
-
-                    # first token could be a new and unique name
-                    if tokens[0] != curdatapoint:
-                        name = tokens[0].strip()[:-1]
-
-                        assert name not in self.datapoints
-
-                        self.datapoints[name] = address
-                        curdatapoint = name
-                        tokens = tokens[1:]
-
-                    for token in tokens:
-                        if defining == 'array':
-                            if tokens[i][-1] == ',':
-                                num = self.getValue(tokens[i][:-1])
-                            else:
-                                num = self.getValue(tokens[i])
-                                defining = None
-
-                            self.data += [0] * num
-                            address += num
-
-                        elif defining == 'word':
-                            if tokens[i][-1] == ',':
-                                self.data.append(self.getValue(tokens[i][:-1]))
-                            else:
-                                self.data.append(self.getValue(tokens[i]))
-                                defining = None
-
-                        elif tokens[i] == 'DS':
-                            defining = 'array'
-
-                        elif tokens[i] == 'DW':
-                            defining = 'word'
-
-                elif segment == 'code':
-                    if 'EQU' in tokens:
-                        i = tokens.index('EQU')
-
-                        # EQU cannot be the first or last element in tokens
-                        assert 0 < i < len(tokens) - 1
-
-                        name = tokens[i - 1].strip()
-                        value = self.getValue(tokens[i + 1])
-
-                        # EQU cannot use a name that's already taken
-                        assert name not in self.aliases
-
-                        self.aliases[name] = value
+                    if value is None:
+                        value = 0x3fff
                     else:
-                        self.code.append(tokens)
+                        value = self.get_value(value)
+
+                    tokens.add((base.Token.CODE_SEGMENT_START, value))
+
+                elif name == "@DATA":
+                    segment = "data"
+
+                    if value is None:
+                        value = 0x3fff
+                    else:
+                        value = self.getValue(value)
+
+                    tokens.add((base.Token.DATA_SEGMENT_START, value))
+
+                elif name == "@END" and value is None:
+                    break
+                elif name == "@INCLUDE":
+                    raise NotImplementedError("Include statements are not supported.")
+                elif name == "@STACK":
+                    raise NotImplementedError("Stack statements are not supported.")
+                elif name == "@STACKSIZE":
+                    raise NotImplementedError("Stacksize statements are not supported.")
                 else:
-                    raise ValueError("No active segment")
+                    raise ValueError(f"Invalid token {line!r}")
+            elif "EQU" in (x := line.split()):
+                # An EQU alias: [label] EQU [value]
+                if len(x) != 3:
+                    raise ValueError(f"Invalid EQU-statement: Wrong number of operands. {line!r} -> {x}")
 
-        # replace aliases
-        i = 0
-        while i < len(self.code):
-            instruction = self.code[i]
-            j = 0
-            while j < len(instruction):
-                operand = instruction[j]
-                if isinstance(operand, list):
-                    k = 0
-                    while k < len(operand):
-                        if operand[k] in self.aliases:
-                            self.code[i][j][k] = self.aliases[operand[k]]
-                        elif operand[k] in self.datapoints:
-                            self.code[i][j][k] = self.datapoints[operand[k]]
-                        k += 1
-                elif operand in self.aliases:
-                    self.code[i][j] = self.aliases[operand]
-                elif operand in self.datapoints:
-                    self.code[i][j] = self.datapoints[operand]
-                j += 1
-            i += 1
+                label, equ, value = x
+                if equ != "EQU":
+                    raise ValueError(f"Invalid EQU-statement: Wrong position of EQU keyword. {line!r} -> {x}")
 
-    def isValidAddressThing(self, list_):
-        if isinstance(list_, int):
-            # val
-            return True
+                self.aliases[label] = self.get_value(value)
 
-        if isinstance(list_, str):
-            str_ = list_
+            elif segment == "data":
+                # lines are [label] DW [value](,[value])*
+                x = line.split(maxsplit=2)
 
-            # val
-            if self.isValue(str_):
-                return True
+                if len(x) != 3 or x[1] != "DW":
+                    raise ValueError(f"Invalid data line: {line!r} -> {x}")
 
-            # reg
-            if self.isRegister(str_):
-                return True
+                label, _, values = x
 
-        elif len(list_) == 1:
-            str_ = list_[0]
+                for i, v in enumerate(values.split(",")):
+                    self.data[data_addr + i] = self.get_value(v.strip())
 
-            # [--reg]
-            if str_.startswith('--') and self.isRegister(str_[2:]):
-                return True
+                data_size = i + 1
+                self.aliases[label] = data_addr
+                data_addr += data_size
 
-            # [reg++]
-            if str_.startswith('++') and self.isRegister(str_[:-2]):
-                return True
+                # Improvement: add sizeof(<label>) as a variable
+                self.aliases[f"sizeof({label})"] = data_size
+            elif segment == "code":
+                # check if this is a label
+                if ":" in line:
+                    label_name, after_label = line.split(":")
+                    tokens.add((base.Token.LABEL, label_name))
 
-            # unofficial: [reg] == [reg + 0]
-            if self.isRegister(str_[0]):
-                list_.append('+')
-                list_.append(0)
-                return True
+                    # Check if we need to parse an instruction after the colon
+                    after_label = after_label.strip()
+                    if not after_label:
+                        continue
 
-            # unofficial: [[reg]] == [[reg] + 0]
-            if str_[-1:0] == '][' and self.isRegister(str_[1:-1]):
-                list_.append('+')
-                list_.append(0)
-                return True
+                    line = after_label
 
-        elif len(list_) == 3:
-            if self.isRegister(list_[0]):
-                # [reg + reg]
-                if list_[1] == '+' and self.isRegister(list_[2]):
-                    return True
+                # continue with the instruction
+                try:
+                    mnemonic, operands_str = line.split(maxsplit=1)
 
-                # [reg + val]
-                if list_[1] == '+' and self.isValue(list_[2]):
-                    return True
+                    # split operands by regex (because of the optional comma)
+                    operands = re.split(r"\s*,?\s+", operands_str)
+                except ValueError:  # There was no space after the mnemonic
+                    mnemonic, operands = line, []
 
-                # unofficial: [reg - val] = [reg + -val]
-                if list_[1] == '-' and self.isValue(list_[2]):
-                    list_[2] = -self.getValue(list_[2])
-                    return True
+                known_mnemonics = base.Instructions.get(len(operands), None)
 
-            elif list_[0][0] == '[' and list_[0][3] == ']' and self.isRegister(list_[0][1:3]):
-                # [[reg] + reg]
-                if list_[1] == '+' and self.isRegister(list_[2]):
-                    return True
+                error_prefix = f"Could not parse {line!r} as code:"
 
-                # [[reg] + val]
-                if list_[1] == '+' and self.isValue(list_[2]):
-                    return True
+                if not known_mnemonics:
+                    raise ValueError(f"{error_prefix} Bad number of operands: {operands}.")
 
-                # unofficial: [[reg] - val] = [[reg] + -val]
-                if list_[1] == '-' and self.isValue(list_[2]):
-                    list_[2] = -self.getValue(list_[2])
-                    return True
+                if mnemonic.upper() not in known_mnemonics:
+                    raise ValueError(f"{error_prefix} Unknown mnemonic {mnemonic!r} with {len(operands)} operands.")
 
-        return False
+                parsed_ops = self.parse_operands(operands)
 
-    def getAddressingMode(self, list_) -> base.AddressingMode:
-        if isinstance(list_, int):
-            # val - mode 0
-            return base.AddressingMode.VALUE
+                # Handle simplified mnemonics
+                if mnemonic.upper() == "RTS":
+                    if parsed_ops:
+                        raise ValueError(f"{error_prefix} RTS instruction takes no operands - got {operands}")
 
-        if isinstance(list_, str):
-            str_ = list_
+                    mnemonic = "JMP"
+                    parsed_ops = [(base.Token.AM_POST_INC, 7)]
+                elif mnemonic.upper() == "PUSH":
+                    if len(parsed_ops) != 1 or parsed_ops[0][0] != base.Token.AM_REGISTER:
+                        raise ValueError(f"{error_prefix} PUSH instruction takes 1 register operand - got {operands}")
 
-            # val - mode 0
-            if self.isValue(str_):
-                return base.AddressingMode.VALUE
+                    mnemonic = "STOR"
+                    parsed_ops = [parsed_ops[0], (base.Token.AM_PRE_DEC, 7)]
+                elif mnemonic.upper() == "PULL":
+                    if len(parsed_ops) != 1 or parsed_ops[0][0] != base.Token.AM_REGISTER:
+                        raise ValueError(f"{error_prefix} LOAD instruction takes 1 register operand - got {operands}")
 
-            # reg - mode 1
-            if self.isRegister(str_):
-                return base.AddressingMode.REGISTER
+                    mnemonic = "LOAD"
+                    parsed_ops = [parsed_ops[0], (base.Token.AM_POST_INC, 7)]
 
-        elif len(list_) == 1:
-            str_ = list_[0]
+                expected_types = base.InstructionOperands[mnemonic.upper()]
 
-            # [--reg] - mode 5
-            if str_[:2] == '--' and self.isRegister(str_[2:]):
-                return base.AddressingMode.AUTO_PRE_DEC
+                for (got, *_), expected in zip(parsed_ops, expected_types):
+                    if got not in expected:
+                        raise ValueError(f"{error_prefix} Invalid operand types. Expected operand types {expected_types}, got {parsed_ops}.")
 
-            # [reg++] - mode 4
-            if str_[-2:] == '++' and self.isRegister(str_[:-2]):
-                return base.AddressingMode.AUTO_POST_INC
+                # Add the line to the segment
+                tokens.add((base.Token.MNEMONIC, mnemonic.upper(), parsed_ops))
 
-        elif len(list_) == 3:
-            if self.isRegister(list_[0]):
-                # [reg + reg] - mode 3
-                if list_[1] == '+' and self.isRegister(list_[2]):
-                    return base.AddressingMode.REG_INDEXED
+            else:
+                ...
 
-                # [reg + val] - mode 2
-                if list_[1] == '+' and self.isValue(list_[2]):
-                    return base.AddressingMode.INDEXED
-
-            elif list_[0][0] == '[' and list_[0][3] == ']' and self.isRegister(list_[0][1:3]):
-                # [[reg] + reg]
-                if list_[1] == '+' and self.isRegister(list_[2]):
-                    return base.AddressingMode.IND_REG_INDEXED
-
-                # [[reg] + val]
-                if list_[1] == '+' and self.isValue(list_[2]):
-                    return base.AddressingMode.IND_INDEXED
-
-        raise ValueError(f"Cannot determine addressing mode of {list_!r}")
+        print(tokens._content)
+        print(self.aliases)
+        print(self.data)
 
 
-    def getValue(self, str_):
-        if isinstance(str_, int):
-            return str_
+    def parse_operands(self, operands: list[str]) -> list[typing.Union[tuple[base.Token, typing.Union[int, str]], tuple[base.Token, int, int]]]:
+        """
+        Given a list of operands, returns a list of tokenised operands.
+        """
 
-        if str_[0] == '%':
-            # binary
-            base = 2
-            str_ = str_[1:]
-        elif str_[0] == '$':
-            # hexadecimal
-            base = 16
-            str_ = str_[1:]
-        else:
-            base = 10
+        value = r"((?:-?[0-9]+)|(?:#[0-9a-fA-F]+)|(?:%[01]+)|(?:'..?')|(?:\"..?\"))"
+        register = r"((?:[rR][0-7])|SP|GB)"
 
-        return int(str_, base)
+        value_re = re.compile(value)
+        register_re = re.compile(register)
+
+        indexed_re = re.compile(r"\s*".join([r"\[", register, r"\+", value, r"\]"]))
+        reg_indexed_re = re.compile(r"\s*".join([r"\[", register, r"\+", register, r"\]"]))
+        post_inc_re = re.compile(r"\s*".join([r"\[", register, r"\+\+", r"\]"]))
+        pre_dec_re = re.compile(r"\s*".join([r"\[", r"--", register, r"\]"]))
+        ind_indexed_re = re.compile(r"\s*".join([r"\[", r"\[", register, r"\]", r"\+", value, r"\]"]))
+        ind_reg_indexed_re = re.compile(r"\s*".join([r"\[", r"\[", register, r"\]", r"\+", register, r"\]"]))
+
+        tokens = []
+
+        for operand in operands:
+            name = operand.strip()
+
+            if value_re.match(name):
+                n = self.get_value(name)
+
+                tokens.append((base.Token.AM_VALUE, n))
+            elif register_re.match(name):
+                n = self.get_reg(name)
+
+                tokens.append((base.Token.AM_REGISTER, n))
+            elif (m := indexed_re.match(name)):
+                reg, disp = m.groups()
+
+                reg = self.get_reg(reg)
+                disp = self.get_value(disp)
+
+                tokens.append((base.Token.AM_INDEXED, reg, disp))
+            elif (m := reg_indexed_re.match(name)):
+                reg0, reg1 = m.groups()
+
+                reg0 = self.get_reg(reg0)
+                reg1 = self.get_reg(reg1)
+
+                tokens.append((base.Token.AM_REG_INDEXED, reg0, reg1))
+            elif (m := post_inc_re.match(name)):
+                reg, = m.groups()
+                reg = self.get_reg(reg)
+
+                tokens.append((base.Token.AM_POST_INC, reg))
+            elif (m := pre_dec_re.match(name)):
+                reg, = m.groups()
+                reg = self.get_reg(reg)
+
+                tokens.append((base.Token.AM_PRE_DEC, reg))
+            elif (m := ind_indexed_re.match(name)):
+                reg, disp = m.groups()
+
+                reg = self.get_reg(reg)
+                disp = self.get_value(disp)
+
+                tokens.append((base.Token.AM_IND_INDEXED, reg, disp))
+            elif (m := ind_reg_indexed_re.match(name)):
+                reg0, reg1 = m.groups()
+
+                reg0 = self.get_reg(reg0)
+                reg1 = self.get_reg(reg1)
+
+                tokens.append((base.Token.AM_IND_REG_INDEXED, reg0, reg1))
+            else:  # must be a label
+                # TODO: Maybe do some extra checks here?
+                tokens.append((base.Token.AM_LABEL, name))
+
+        return tokens
 
 
-    def isValue(self, str_):
-        if isinstance(str_, int):
-            return True
 
-        if str_[0] not in '%$':
-            # decimal
-            allowed = '0123456789'
-        elif str_[0] == '%':
-            # binary
-            allowed = '01'
-            str_ = str_[1:]
-        else:
-            # hexadecimal
-            allowed = '0123456789abcdef'
-            str_ = str_[1:].lower()
+        # for line in self.input:
+        #     # ignore everything after ;
+        #     line = line.split(';')[0]
 
-        for d in str_:
-            if d not in allowed:
-                return False
+        #     # split line into tokens separated by whitespace, be careful, because
+        #     # we don't want any spaces inside [] to be split. So, first split on
+        #     # [
+        #     tokens = line.split('[')
+        #     if len(tokens) > 1:
+        #         ind = tokens[1].split('+')
 
-        return True
+        #         # strip everything after ]
+        #         ind[-1] = ind[-1].split(']')[0]
 
+        #         if ind:
+        #             # a + was found and removed, so add it back in
+        #             ind = [ind[0].rstrip(), '+', ind[1].lstrip()]
 
-    def getRegister(self, str_):
-        # remove all whitespace and make the string lowercase
-        str_ = ''.join(str_.lower().split())
+        #         tokens = tokens[0].split()
+        #         tokens.append(ind)
+        #     else:
+        #         tokens = tokens[0].split()
 
-        if str_ in ['gb', 'sp']:
-            return (str_ == 'sp') + 6
+        #     if '@CODE' in tokens:
+        #         if segment == 'code':
+        #             raise ValueError('CODE segment can only be started once')
 
-        try:
-            n = int(str_[-1])
-        except ValueError:
-            raise ValueError(f"Could not parse register {str_!r}")
+        #         i = tokens.index('@CODE')
 
-        if n < 0 or 7 < n:
-            raise ValueError('invalid register %s' % str_)
+        #         if i + 1 < len(tokens):
+        #             addr = self.getValue(tokens[i + 1])
+        #         else:
+        #             addr = 0x3ffff
 
-        return n
+        #         # length is to be calculated later
+        #         len_ = None
+        #         self.code = [['@C', addr, len_]]
 
+        #         segment = 'code'
 
-    def isRegister(self, str_):
-        if not isinstance(str_, str):
-            return False
+        #     elif '@DATA' in tokens:
+        #         if segment == 'data':
+        #             raise ValueError('DATA segment can only be started once')
 
-        str_ = ''.join(str_.lower().split())
+        #         i = tokens.index('@DATA')
 
-        return (len(str_) == 2) and ((str_ in ['gb', 'sp']) or (str_[0].lower() == 'r' and 0 <= int(str_[-1]) <= 7))
+        #         if i + 1 < len(tokens):
+        #             addr = self.getValue(tokens[i + 1])
+        #         else:
+        #             addr = 0x3ffff
+
+        #         # length is to be calculated later
+        #         len_ = None
+        #         self.data = [['@D', addr, len_]]
+        #         address = 0
+        #         curdatapoint = -1
+        #         defining = None
+
+        #         segment = 'data'
+
+        #     elif '@END' in tokens:
+        #         break
+
+        #     elif '@INCLUDE' in tokens:
+        #         raise NotImplementedError("Include statements are not yet supported.")
+
+        #     elif tokens:
+        #         if segment == 'data':
+
+        #             # first token could be a new and unique name
+        #             if tokens[0] != curdatapoint:
+        #                 name = tokens[0].strip()[:-1]
+
+        #                 assert name not in self.datapoints
+
+        #                 self.datapoints[name] = address
+        #                 curdatapoint = name
+        #                 tokens = tokens[1:]
+
+        #             for token in tokens:
+        #                 if defining == 'array':
+        #                     if tokens[i][-1] == ',':
+        #                         num = self.getValue(tokens[i][:-1])
+        #                     else:
+        #                         num = self.getValue(tokens[i])
+        #                         defining = None
+
+        #                     self.data += [0] * num
+        #                     address += num
+
+        #                 elif defining == 'word':
+        #                     if tokens[i][-1] == ',':
+        #                         self.data.append(self.getValue(tokens[i][:-1]))
+        #                     else:
+        #                         self.data.append(self.getValue(tokens[i]))
+        #                         defining = None
+
+        #                 elif tokens[i] == 'DS':
+        #                     defining = 'array'
+
+        #                 elif tokens[i] == 'DW':
+        #                     defining = 'word'
+
+        #         elif segment == 'code':
+        #             if 'EQU' in tokens:
+        #                 i = tokens.index('EQU')
+
+        #                 # EQU cannot be the first or last element in tokens
+        #                 assert 0 < i < len(tokens) - 1
+
+        #                 name = tokens[i - 1].strip()
+        #                 value = self.getValue(tokens[i + 1])
+
+        #                 # EQU cannot use a name that's already taken
+        #                 assert name not in self.aliases
+
+        #                 self.aliases[name] = value
+        #             else:
+        #                 self.code.append(tokens)
+        #         else:
+        #             raise ValueError("No active segment")
+
+        # # replace aliases
+        # for i, instruction in enumerate(self.code):
+        #     instruction = self.code[i]
+
+        #     for j, operand in enumerate(instruction):
+        #         if isinstance(operand, list):
+        #             for k in range(len(operand)):
+        #                 if operand[k] in self.aliases:
+        #                     self.code[i][j][k] = self.aliases[operand[k]]
+        #                 elif operand[k] in self.datapoints:
+        #                     self.code[i][j][k] = self.datapoints[operand[k]]
+
+        #         elif operand in self.aliases:
+        #             self.code[i][j] = self.aliases[operand]
+        #         elif operand in self.datapoints:
+        #             self.code[i][j] = self.datapoints[operand]
+
+    def get_reg(self, reg_str: str) -> int:
+        """
+        Converts a register representation to an int
+        """
+        # Register aliases
+        if reg_str == "SP":
+            reg_str = "R7"
+        elif reg_str == "GB":
+            reg_str = "R6"
+
+        r, n = reg_str
+
+        if not (r in "rR" and 0 <= int(n) <= 7):
+            raise ValueError(f"Could not parse register {reg_str}")
+
+        return int(n)
+
+    def get_value(self, str_value: str) -> int:
+        """
+        Converts a literal value to an integer. See section 4.1.
+        """
+        if str_value.startswith("%"):  # binary
+            _, sign_bit, *value_part = str_value
+            full_value = "".join(value_part).rjust(18, sign_bit)
+
+            return int(full_value, 2) % 2 ** 18
+        elif str_value.startswith("$"):  # hexadecimal
+            _, full_value = str_value
+
+            return int(full_value, 16) % 2 ** 18
+        elif str_value.startswith("'") or str_value.startswith('"'):  # ascii
+            _, *chars, _ = str_value
+
+            # no need for modular reduction, since these values can never exceed
+            # 2 ** 18
+            if len(chars) == 1:
+                return ord(chars[0])
+            elif len(chars) != 2:
+                raise ValueError(f"Cannot parse value {str_value!r} as ASCII literal: Wrong number of characters ({len(chars)}) - must be 1 or 2.")
+
+            return (ord(chars[1]) << 8) | ord(chars[0])
+        else:  # decimal
+            return int(str_value, 10) % 2 ** 18
