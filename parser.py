@@ -89,20 +89,33 @@ class Parser:
 
             elif segment == "data":
                 # lines are [label] DW [value](,[value])*
+                #        or [label] DS [length]
                 x = line.split(maxsplit=2)
 
-                if len(x) != 3 or x[1] != "DW":
+                if len(x) != 3:
                     raise ValueError(f"Invalid data line: {line!r} -> {x}")
 
-                label, _, values = x
+                label, op, values = x
 
-                tokens.append((base.Token.LABEL, label))
+                if op == "DW":
+                    # Define a single word
+                    tokens.append((base.Token.LABEL, label))
 
-                for i, v in enumerate(values.split(",")):
-                    tokens.append((base.Token.DATA, self.get_value(v.strip())))
+                    for i, v in enumerate(values.split(",")):
+                        tokens.append((base.Token.DATA, self.get_value(v.strip())))
 
-                # Improvement: add sizeof(<label>) as an implicit EQU
-                aliases[f"sizeof({label})"] = i + 1
+                    # Improvement: add sizeof(<label>) as an implicit EQU
+                    aliases[f"sizeof({label})"] = i + 1
+                elif op == "DS":
+                    # Define an array
+                    tokens.append((base.Token.LABEL, label))
+                    size = self.get_value(value.strip())
+
+                    for _ in range(size):
+                        tokens.append((base.Token.DATA, 0))
+
+                    aliases[f"sizeof({label})"] = size
+
             elif segment == "code":
                 # check if this is a label
                 if ":" in line:
