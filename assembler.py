@@ -98,6 +98,8 @@ class Assembler:
         possible_gaps = []
 
         addressed_tokens = {}  # dict[int, base.Token]
+        long_form_tokens = []
+        all_tokens = []  # code and data tokens
         for token in tokens:
             if token[0] == base.Token.DATA_SEGMENT_START:
 
@@ -121,204 +123,98 @@ class Assembler:
                 value = token[1]
                 addressed_tokens[address] = token
                 data.entries.append(token)
+                all_tokens.append((address, token))
 
                 address += 1
 
             elif token[0] == base.Token.MNEMONIC:
                 _, mnemonic, operands = token
                 addressed_tokens[address] = token
+                all_tokens.append((address, token))
 
-                address += 1
+                # Check if this instruction will use long form. At this point,
+                # we have not yet resolved the labels (they are not even all in
+                # the aliases dict). In those cases, we assume the long form is
+                # used, and we adjust later.
+                if self.maybe_uses_long_form(address, mnemonic, operands, aliases):
+                    long_form_tokens.append((address, token))
+                    address += 2
+                else:
+                    address += 1
 
-                # Assume each unresolved label operand is too far, then we can
-                # shrink later if possible, without needing to calculate all
-                # this again.
-                for i, (op_token, *vals) in enumerate(operands):
-                    if op_token == base.Token.AM_LABEL:
-                        val = vals[0]
 
-                        if val not in aliases:
-                            # The label still needs to be resolved. Assume it's
-                            # too big, so we can adjust later.
-                            possible_gaps.append(address)
-                            address += 1
-                            break
+        # Figure out which instructions truly use long form. Note that since we
+        # overestimated the number of long form instructions, only long form
+        # instructions will actually use short form, not the other way around.
+        while True:
+            newly_reduced = {}
 
-                        # We know the value of the label, so continue as if it
-                        # has been a value all along...
-                        op_token = base.Token.AM_VALUE
-                        val = aliases[val]
+            for i, (addr, token) in enumerate(long_form_tokens):
+                _, mnemonic, operands = token
 
-                        operands[i] = (base.Token.AM_VALUE, val)
+                if not self.maybe_uses_long_form(addr, mnemonic, operands, aliases):
+                    newly_reduced[i] = addr
 
-                    if op_token == base.Token.AM_VALUE:
-                        if mnemonic in base.BinaryInstructions | {"CLRI", "SETI"}:
-                            n = 8
-                        elif mnemonic in base.BranchInstructions:
-                            n = 9
-                        else:
-                            raise NotImplementedError(f"Unexpected AM_VALUE for mnemonic {mnemonic} - {op_token} - {vals}")
+            x = len(long_form_tokens)
 
-                        val = vals[0]
-                        if not isinstance(val, int):
-                            if val not in aliases:
-                                # The value is a label that still needs to be
-                                # resolved. Assume it's too big, so we can
-                                # adjust later.
-                                possible_gaps.append(address)
-                                address += 1
-                                break
+            # Remove the reduced tokens from the list
+            for i in reversed(newly_reduced):
+                del long_form_tokens[i]
 
-                            val = aliases[val]
-                            operands[i] = (base.Token.AM_VALUE, val)
+            assert len(long_form_tokens) + len(newly_reduced) == x
 
-                        # Values are already normalised to [0, 2**18 - 1], so we
-                        # have to subtract the negative values from 2 ** 18.
-                        if 2 ** (n - 1) < val < 2 ** 18 - 2 ** (n - 1):
-                            possible_gaps.append(address)
-                            address += 1
-                            break
+            # No instructions changed from long form to short form - the system
+            # reached a stable state.
+            if not newly_reduced:
+                break
 
-                    if op_token in base.Token.AM_INDEXED | base.Token.AM_IND_INDEXED:
-                        disp = vals[1]
+            # Update the addresses of the aliases and tokens
+            for alias in aliases:
+                value = aliases[alias]
 
-                        if not isinstance(disp, int):
-                            if disp not in aliases:
-                                # The displacement is a label that still needs
-                                # to be resolved. Assume it's too big, so we can
-                                # adjust later.
-                                possible_gaps.append(address)
-                                address += 1
-                                break
+                # maybe reduce it
+                count = 0
+                for x in newly_reduced.values():
+                    if x < value:
+                        count += 1
 
-                            vals[1] = disp = aliases[disp]
-                            operands[i] = (op_token, vals)
+                aliases[alias] -= count
 
-                        # NOTE: The escape sequence is 0b11111 here
-                        if not 0 <= disp <= 30:
-                            possible_gaps.append(address)
-                            address += 1
-                            break
+            for i, (address, token) in enumerate(all_tokens):
+                # maybe reduce it
+                count = 0
+                for x in newly_reduced.values():
+                    if x < address:
+                        count += 1
+
+                address -= count
+
+                all_tokens[i] = (address, token)
+
+        print("Done!")
+        print(long_form_tokens)
+        print(aliases)
+
+        # Resolve all aliases.
+        for i, (address, token) in enumerate(all_tokens):
+            all_tokens[i] = (address, self.resolve_aliases(address, token, aliases))
 
         del address
         del token
+        del i
+        del value
 
         # Calculate data size
         data.size = len(data.entries)
-
-        # We may have overshot - now remove those gaps and re-adjust.
-        gaps = []
-        for possible_gap in possible_gaps:
-            base_token_address = possible_gap - 1
-            base_token = addressed_tokens[base_token_address]
-
-            if base_token[0] != base.Token.MNEMONIC:
-                raise ValueError("Expected mnemonic on address before possible gap")
-
-            _, mnemonic, operands = base_token
-
-            for i, (op_token, *vals) in enumerate(operands):
-
-                if op_token == base.Token.AM_LABEL:
-                    val = vals[0]
-
-                    if val not in aliases:
-                        raise ValueError(f"Unknown label {val} in {operands} of {token}")
-
-                    # We know the value of the label, so continue as if it
-                    # has been a value all along...
-                    op_token = base.Token.AM_VALUE
-                    val = aliases[val]
-
-                    if mnemonic in base.BranchInstructions:
-                        # The value to be encoded is actually the displacement.
-                        val -= base_token_address + 2
-                        val %= 2 ** 18
-
-                        n = 9
-                        # Values are already normalised to [0, 2**18 - 1], so we
-                        # have to subtract the negative values from 2 ** 18.
-                        if not 2 ** (n - 1) < val < 2 ** 18 - 2 ** (n - 1):
-                            # The gap turned out to not be necessary - adjust
-                            # branch distance
-                            val -= 1
-                            val %= 2 ** 18
-
-                            gaps.append(possible_gap)
-
-                    addressed_tokens[base_token_address][2][i] = (op_token, val)
-                    continue
-
-                if op_token == base.Token.AM_VALUE:
-                    if mnemonic in base.BinaryInstructions | {"CLRI", "SETI"}:
-                        n = 8
-                    elif mnemonic in base.BranchInstructions:
-                        n = 9
-                    else:
-                        raise NotImplementedError(f"Unexpected AM_VALUE for mnemonic {mnemonic} - {op_token} - {vals}")
-
-                    val = vals[0]
-                    if not isinstance(val, int):
-                        if val not in aliases:
-                            raise ValueError(f"Unknown label {val}")
-
-                        val = aliases[val]
-                        addressed_tokens[base_token_address][2][i] = (op_token, val)
-
-                    # Values are already normalised to [0, 2**18 - 1], so we
-                    # have to subtract the negative values from 2 ** 18.
-                    if not 2 ** (n - 1) < val < 2 ** 18 - 2 ** (n - 1):
-                        # The gap turned out to not be necessary...
-                        gaps.append(possible_gap)
-
-                if op_token in base.Token.AM_INDEXED | base.Token.AM_IND_INDEXED:
-                    disp = vals[1]
-
-                    if not isinstance(disp, int):
-                        if disp not in aliases:
-                            raise ValueError(f"Unknown label {disp}")
-
-                        addressed_tokens[base_token_address][2][i][2] = disp = aliases[disp]
-
-                    # NOTE: The escape sequence is 0b11111 here
-                    if 0 <= disp <= 30:
-                        # The gap turned out to not be necessary...
-                        gaps.append(possible_gap)
-
-        if gaps:
-            # Remove the gaps. We do this by changing the keys of tokens in
-            # addressed_tokens.
-            # TODO: Adjust branch offsets.
-            addr = 0
-
-            for token_addr in range(min(addressed_tokens), max(addressed_tokens) + 1):
-                if token_addr in addressed_tokens:
-                    # This is safe, because addr is never larger than token_addr
-                    addressed_tokens[addr] = addressed_tokens[token_addr]
-                    addr += 1
-
-        # Oops, 'addressed tokens' contains more information than we need...
-        # TODO: I should probably remove / rewrite the above bit
-
-        # Fill data segment
-        # TODO: Don't assume data starts at 0
-        for addr in range(data.size):
-            data_token, _ = addressed_tokens[addr]
-
-            if data_token != base.Token.DATA:
-                raise ValueError(f"Unexpected non-data at {addr}")
 
         # Fill code segment
         code.size = 0
 
         # TODO: Don't assume code starts at data.size
-        for addr in range(data.size, max(addressed_tokens)):
-
-            if addr not in addressed_tokens:
-                # Previous instruction was 2 words
+        for address, token in all_tokens:
+            if token[0] == base.Token.DATA:
                 continue
 
-            token = addressed_tokens[addr]
             if token[0] != base.Token.MNEMONIC:
                 raise ValueError(f"Bad code token {token}")
 
@@ -334,9 +230,102 @@ class Assembler:
             else:
                 encoding_str = f"{encoding[0]:05x} {'':5}"
 
-            print(f"{addr:05x} {encoding_str} {mnemonic:5} {self.operands_to_str(operands)}")
+            print(f"{address:05x} {encoding_str} {mnemonic:5} {self.operands_to_str(operands)}")
 
         return code, data, stack
+
+    def resolve_aliases(self, address: int, token: ..., aliases: dict) -> tuple[base.Token, list]:
+        type_ = token[0]
+        if type_ == base.Token.MNEMONIC:
+            _, mnemonic, operands = token
+
+            new_operands = []
+            for operand in operands:
+                operand_type = operand[0]
+
+                if operand_type == base.Token.AM_LABEL:
+                    name = operand[1]
+                    value = aliases[name]
+
+                    if mnemonic in base.BranchInstructions:
+                        if self.uses_long_form(address, mnemonic, operands, aliases):
+                            delta = 2
+                        else:
+                            delta = 1
+
+                        value -= address + delta
+                        value %= 2 ** 18
+
+                    new_operands.append((base.Token.AM_VALUE, value))
+
+                elif operand_type in base.Token.AM_INDEXED | base.Token.AM_IND_INDEXED:
+                    value = operand[2]
+
+                    if isinstance(value, str):
+                        value = aliases[value]
+
+                    new_operands.append((operand_type, operand[1], value))
+                else:
+                    new_operands.append(operand)
+
+            return (type_, mnemonic, new_operands)
+
+        if type_ == base.Token.DATA:
+            return token
+
+        return token
+
+    def maybe_uses_long_form(self, *args):
+        return self._uses_long_form(*args) is not False
+
+    def uses_long_form(self, *args):
+        return self._uses_long_form(*args) is True
+
+    def _uses_long_form(self, address: int, mnemonic: str, operands: list, aliases: dict[str, int] = {}) -> typing.Optional[bool]:
+        """
+        Returns None on unknown label.
+        """
+
+        for operand in operands:
+            type_ = operand[0]
+
+            if type_ in base.Token.AM_LABEL | base.Token.AM_VALUE:
+                if type_ == base.Token.AM_LABEL:
+                    name = operand[1]
+
+                    if name not in aliases:
+                        return None
+
+                    value = aliases[name]
+                else:
+                    value = operand[1]
+
+                if mnemonic in base.BranchInstructions:
+                    # Do we need long form, assuming this instruction is not
+                    # long form?
+                    value -= address + 1
+                    value %= 2 ** 18
+                    size = 9
+
+                else:
+                    size = 8
+
+                if 2 ** (size - 1) <= value < 2 ** 18 - 2 ** (size - 1):
+                    return True
+
+            if type_ in base.Token.AM_INDEXED | base.Token.AM_IND_INDEXED:
+                value = operand[2]
+
+                if isinstance(value, str):
+                    if value not in aliases:
+                        return None
+
+                    value = aliases[value]
+
+                if not 0 <= value < 31:
+                    return True
+
+        return False
 
     def operands_to_str(self, operands: list) -> str:
         """
@@ -345,7 +334,7 @@ class Assembler:
         def operand_to_str(operand) -> str:
             type_ = operand[0]
 
-            if type_ == base.Token.LABEL:
+            if type_ == base.Token.AM_LABEL:
                 return f"{operand[1]}"
             if type_ == base.Token.AM_VALUE:
                 return f"0x{operand[1]:05x}"
@@ -366,7 +355,6 @@ class Assembler:
 
             return f"{operand}"
 
-
         return ", ".join(
             operand_to_str(operand)
             for operand in operands
@@ -384,7 +372,7 @@ class Assembler:
             aaa = 0
             value = addressing_mode[1]
 
-            if 1 << 7 == value or 2 ** 8 <= value < 2 ** 18 - 2 ** 8:
+            if 2 ** 7 <= value < 2 ** 18 - 2 ** 7:
                 # long form required
                 sss = 1 << 7
                 use_long_form = True
