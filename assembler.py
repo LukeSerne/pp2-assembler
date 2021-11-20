@@ -340,7 +340,7 @@ class Assembler:
 
         # Fill code segment
         # TODO: Don't assume code starts at data.size
-        code.size = max(addressed_tokens) - data.size + 1
+        code.size = max(addressed_tokens) - (data.size + 1)
         for addr in range(data.size, max(addressed_tokens)):
 
             if addr not in addressed_tokens:
