@@ -77,10 +77,14 @@ InstructionOperands = {
 
     "JMP": [Token.ANY_ADDRESSING_MODE ^ Token.AM_VALUE],
     "JSR": [Token.ANY_ADDRESSING_MODE ^ Token.AM_VALUE],
-    "CLRI": [Token.AM_VALUE],
-    "SETI": [Token.AM_VALUE],
+    "CLRI": [Token.ANY_ADDRESSING_MODE],
+    "SETI": [Token.ANY_ADDRESSING_MODE],
+
+    # Apparently PSEM and VSEM can also be used without operands... No clue how
+    # that works though, so that's unsupported for now.
     "PSEM": [Token.ANY_ADDRESSING_MODE ^ Token.AM_VALUE ^ Token.AM_REGISTER],
     "VSEM": [Token.ANY_ADDRESSING_MODE ^ Token.AM_VALUE ^ Token.AM_REGISTER],
+
     "BRA": [Token.AM_LABEL],
     "BRS": [Token.AM_LABEL],
     "BEQ": [Token.AM_LABEL],

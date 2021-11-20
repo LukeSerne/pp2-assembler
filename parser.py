@@ -22,15 +22,11 @@ class Parser:
         self.code = []
         self.data = []
 
-    def parseSections(self):
+    def parseSections(self) -> list:
         # process the file line by line
-        segment = None
-        self.aliases = {}
-        self.data = {}
-
         segment = None  # 'code', 'data' or None
-        tokens = Segment()
-        data_addr = 0
+        aliases = {}
+        tokens = []
 
         # Tokenise based on spaces
         for line in self.input.split("\n"):
@@ -53,21 +49,21 @@ class Parser:
                     segment = "code"
 
                     if value is None:
-                        value = 0x3fff
+                        value = 0x3ffff
                     else:
                         value = self.get_value(value)
 
-                    tokens.add((base.Token.CODE_SEGMENT_START, value))
+                    tokens.append((base.Token.CODE_SEGMENT_START, value))
 
                 elif name == "@DATA":
                     segment = "data"
 
                     if value is None:
-                        value = 0x3fff
+                        value = 0x3ffff
                     else:
                         value = self.getValue(value)
 
-                    tokens.add((base.Token.DATA_SEGMENT_START, value))
+                    tokens.append((base.Token.DATA_SEGMENT_START, value))
 
                 elif name == "@END" and value is None:
                     break
@@ -79,6 +75,7 @@ class Parser:
                     raise NotImplementedError("Stacksize statements are not supported.")
                 else:
                     raise ValueError(f"Invalid token {line!r}")
+
             elif "EQU" in (x := line.split()):
                 # An EQU alias: [label] EQU [value]
                 if len(x) != 3:
@@ -88,7 +85,7 @@ class Parser:
                 if equ != "EQU":
                     raise ValueError(f"Invalid EQU-statement: Wrong position of EQU keyword. {line!r} -> {x}")
 
-                self.aliases[label] = self.get_value(value)
+                aliases[label] = self.get_value(value)
 
             elif segment == "data":
                 # lines are [label] DW [value](,[value])*
@@ -99,20 +96,18 @@ class Parser:
 
                 label, _, values = x
 
+                tokens.append((base.Token.LABEL, label))
+
                 for i, v in enumerate(values.split(",")):
-                    self.data[data_addr + i] = self.get_value(v.strip())
+                    tokens.append((base.Token.DATA, self.get_value(v.strip())))
 
-                data_size = i + 1
-                self.aliases[label] = data_addr
-                data_addr += data_size
-
-                # Improvement: add sizeof(<label>) as a variable
-                self.aliases[f"sizeof({label})"] = data_size
+                # Improvement: add sizeof(<label>) as an implicit EQU
+                aliases[f"sizeof({label})"] = i + 1
             elif segment == "code":
                 # check if this is a label
                 if ":" in line:
                     label_name, after_label = line.split(":")
-                    tokens.add((base.Token.LABEL, label_name))
+                    tokens.append((base.Token.LABEL, label_name))
 
                     # Check if we need to parse an instruction after the colon
                     after_label = after_label.strip()
@@ -169,14 +164,12 @@ class Parser:
                         raise ValueError(f"{error_prefix} Invalid operand types. Expected operand types {expected_types}, got {parsed_ops}.")
 
                 # Add the line to the segment
-                tokens.add((base.Token.MNEMONIC, mnemonic.upper(), parsed_ops))
+                tokens.append((base.Token.MNEMONIC, mnemonic.upper(), parsed_ops))
 
             else:
-                ...
+                raise ValueError(f"Text outside segment - segment is {segment}")
 
-        print(tokens._content)
-        print(self.aliases)
-        print(self.data)
+        return tokens, aliases
 
 
     def parse_operands(self, operands: list[str]) -> list[typing.Union[tuple[base.Token, typing.Union[int, str]], tuple[base.Token, int, int]]]:
