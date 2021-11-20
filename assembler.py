@@ -333,9 +333,17 @@ class Assembler:
                 raise ValueError(f"Bad code token {token}")
 
             _, mnemonic, operands = token
-            print(f"{addr:05x} {mnemonic:5} {self.operands_to_str(operands)}")
+
             encoding = self.encode_mnemonic(mnemonic, operands)
             code.entries.append(encoding)
+
+            # TODO: Deduce mnemonic and operands from encoding
+            if len(encoding) == 2:
+                encoding_str = f"{encoding[0]:05x} {encoding[1]:05x}"
+            else:
+                encoding_str = f"{encoding[0]:05x} {'':5}"
+
+            print(f"{addr:05x} {encoding_str} {mnemonic:5} {self.operands_to_str(operands)}")
 
         return code, data, stack
 
