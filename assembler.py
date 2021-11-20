@@ -220,7 +220,6 @@ class Assembler:
             for i, (op_token, *vals) in enumerate(operands):
 
                 if op_token == base.Token.AM_LABEL:
-                    print(possible_gap, mnemonic, operands, vals)
                     val = vals[0]
 
                     if val not in aliases:
@@ -290,42 +289,24 @@ class Assembler:
         print("Gaps:", [hex(g) for g in gaps])
         # the largest address
         if gaps:
-            addrs = sorted(addressed_tokens.keys())
-            result = []
-            delta = 0
-            i = 0
-            for a in addrs:
-                if a == gaps[i]:
-                    delta += 1
-                elif a == gaps[i] + 1:
-                    i += 1
-                else:
-                    result.append(a - delta)
-
-            print(addrs)
-            print(result)
 
             max_address = max(addressed_tokens)
             delta = 0
             gap_i = 0
 
+            # TODO: Adjust branch offsets.
             for addr in range(gaps[0], max_address):
                 if addr == gaps[gap_i]:
                     delta += 1
                 elif addr == gaps[gap_i] + 1:
                     gap_i += 1
-                else:
-                    # TODO: Adjust branch offsets.
-
-                    if addr in addressed_tokens:
-                        addressed_tokens[addr - delta] = addressed_tokens[addr]
+                elif addr in addressed_tokens:
+                    addressed_tokens[addr - delta] = addressed_tokens[addr]
 
             for i in range(delta):
                 # Some addresses might not be in there because they were gaps
                 if max_address - i in addressed_tokens:
                     del addressed_tokens[max_address - i]
-
-        # print(addressed_tokens)
 
         # Oops, we don't need addressed tokens...
         # TODO: I should probably remove / rewrite the above bit
