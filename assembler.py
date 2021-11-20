@@ -285,30 +285,19 @@ class Assembler:
                         # The gap turned out to not be necessary...
                         gaps.append(possible_gap)
 
-        print("Possible Gaps:", possible_gaps)
-        print("Gaps:", [hex(g) for g in gaps])
-        # the largest address
         if gaps:
-
-            max_address = max(addressed_tokens)
-            delta = 0
-            gap_i = 0
-
+            # Remove the gaps. We do this by changing the keys of tokens in
+            # addressed_tokens.
             # TODO: Adjust branch offsets.
-            for addr in range(gaps[0], max_address):
-                if addr == gaps[gap_i]:
-                    delta += 1
-                elif addr == gaps[gap_i] + 1:
-                    gap_i += 1
-                elif addr in addressed_tokens:
-                    addressed_tokens[addr - delta] = addressed_tokens[addr]
+            addr = 0
 
-            for i in range(delta):
-                # Some addresses might not be in there because they were gaps
-                if max_address - i in addressed_tokens:
-                    del addressed_tokens[max_address - i]
+            for token_addr in range(min(addressed_tokens), max(addressed_tokens) + 1):
+                if token_addr in addressed_tokens:
+                    # This is safe, because addr is never larger than token_addr
+                    addressed_tokens[addr] = addressed_tokens[token_addr]
+                    addr += 1
 
-        # Oops, we don't need addressed tokens...
+        # Oops, 'addressed tokens' contains more information than we need...
         # TODO: I should probably remove / rewrite the above bit
 
         # Fill data segment
