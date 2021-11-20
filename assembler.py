@@ -36,7 +36,7 @@ class Assembler:
 
         code, data, stack = self.assemble_2(tokens, aliases)
 
-        self.write_output(code, data, stack, f"test/test.hex")
+        self.write_output(code, data, stack, self.output)
 
     def write_output(self, code: Segment, data: Segment, stack: Segment, output_filename: str):
         """
@@ -67,9 +67,7 @@ class Assembler:
             # Then end
             f.write(".\n\n")
 
-
-
-    def assemble_2(self, tokens, aliases) -> tuple:
+    def assemble_2(self, tokens: list, aliases: list) -> tuple:
         """
         Assembles the tokens into more numbers and splits it up into code, data
         and stack. Also converts everything into segments.
@@ -78,28 +76,22 @@ class Assembler:
         - DATA: Calculates length
         - STACK: Default (address: 0x3ffff, size: 0xf0)
         """
+        # TODO: Split this function into multiple shorter funtions
 
-        # Code blocks are blocks of code with no labels in them. They are indexed
-        # by a label name
-        codeblocks = {}
-        curblock = None
-
-        # Aggregate all data in this list
+        # Create the three segments
         data = Segment()
         code = Segment()
         stack = Segment()
 
-        # TODO: Don't hardcode this
+        # TODO: Don't hardcode the stack address and size
         stack.address = 0x3ffff
         stack.size = 0xf0
 
         # Resolve label addresses
-        next_segment_start = address = 0
-        possible_gaps = []
-
-        addressed_tokens = {}  # dict[int, base.Token]
+        address = 0
         long_form_tokens = []
-        all_tokens = []  # code and data tokens
+        all_tokens = []  # code and data tokens - type: list[tuple[int, Token]]
+
         for token in tokens:
             if token[0] == base.Token.DATA_SEGMENT_START:
 
@@ -121,7 +113,6 @@ class Assembler:
 
             elif token[0] == base.Token.DATA:
                 value = token[1]
-                addressed_tokens[address] = token
                 data.entries.append(token)
                 all_tokens.append((address, token))
 
@@ -129,7 +120,6 @@ class Assembler:
 
             elif token[0] == base.Token.MNEMONIC:
                 _, mnemonic, operands = token
-                addressed_tokens[address] = token
                 all_tokens.append((address, token))
 
                 # Check if this instruction will use long form. At this point,
@@ -191,18 +181,9 @@ class Assembler:
 
                 all_tokens[i] = (address, token)
 
-        print("Done!")
-        print(long_form_tokens)
-        print(aliases)
-
         # Resolve all aliases.
         for i, (address, token) in enumerate(all_tokens):
             all_tokens[i] = (address, self.resolve_aliases(address, token, aliases))
-
-        del address
-        del token
-        del i
-        del value
 
         # Calculate data size
         data.size = len(data.entries)
@@ -210,7 +191,6 @@ class Assembler:
         # Fill code segment
         code.size = 0
 
-        # TODO: Don't assume code starts at data.size
         for address, token in all_tokens:
             if token[0] == base.Token.DATA:
                 continue
@@ -230,11 +210,12 @@ class Assembler:
             else:
                 encoding_str = f"{encoding[0]:05x} {'':5}"
 
-            print(f"{address:05x} {encoding_str} {mnemonic:5} {self.operands_to_str(operands)}")
+            if self._verbose:
+                print(f"{address:05x} {encoding_str} {mnemonic:5} {self.operands_to_str(operands)}")
 
         return code, data, stack
 
-    def resolve_aliases(self, address: int, token: ..., aliases: dict) -> tuple[base.Token, list]:
+    def resolve_aliases(self, address: int, token: tuple, aliases: dict) -> tuple[base.Token, list]:
         type_ = token[0]
         if type_ == base.Token.MNEMONIC:
             _, mnemonic, operands = token
@@ -275,11 +256,11 @@ class Assembler:
 
         return token
 
-    def maybe_uses_long_form(self, *args):
-        return self._uses_long_form(*args) is not False
+    def maybe_uses_long_form(self, address: int, mnemonic: str, operands: list, aliases: dict[str, int] = {}) -> bool:
+        return self._uses_long_form(address, mnemonic, operands, aliases) is not False
 
-    def uses_long_form(self, *args):
-        return self._uses_long_form(*args) is True
+    def uses_long_form(self, address: int, mnemonic: str, operands: list, aliases: dict[str, int] = {}) -> bool:
+        return self._uses_long_form(address, mnemonic, operands, aliases) is True
 
     def _uses_long_form(self, address: int, mnemonic: str, operands: list, aliases: dict[str, int] = {}) -> typing.Optional[bool]:
         """
@@ -530,229 +511,3 @@ class Assembler:
             raise ValueError(f"Unimplemented instruction {mnemonic} with {len(operands)} operands.")
 
         raise ValueError(f"Unknown instruction {mnemonic} with {len(operands)} operands.")
-
-
-        # get out all labels
-        for command in segcode:
-
-            # if this command is a label ...
-            if command[1] == ":":
-                # save its relative address in a dict
-                name = command[0]
-
-                # check if label was already used
-                if name in codeblocks:
-                    raise ValueError("label '%s' used multiple times" % name)
-
-                codeblocks[name] = []
-                curblock = codeblocks[name]
-
-                if len(command) > 2:
-                    curblock.append(self.parseInstruction(command[2:]))
-
-            else:
-                if curblock is None:
-                    # maybe the file doesn't start with a label
-                    print("Warning! Instruction detected before first label!")
-                    codeblocks[0] = []
-                    curblock = codeblocks[0]
-
-                curblock.append(self.parseInstruction(command))
-
-        # now pass over everything to convert to byte code
-        byteblocks = {}
-
-        UnOPToValList = ['jmp', 'jsr', 'clri', 'seti', 'psem', 'vsem']
-        BrOPToValList = ['bra', 'brs', 'beq', 'bne', 'bcs', 'bcc', 'bls', 'bhi'
-                        'bvc', 'bvs', 'bpl', 'bmi', 'blt', 'bge', 'ble', 'bgt']
-        BinOPToValList = [None, None, 'load', 'add', 'sub', 'cmp', 'muls', 'mull'
-                        'chck', 'div', 'mod', 'dvmd', 'and', 'or', 'xor', 'stor']
-
-        for label in codeblocks:
-            print('parsing label %s...' % label)
-            code = codeblocks[label]
-
-            for instruction in code:
-                if len(instruction) == 3:
-                    # binary instruction
-                    opc = BinOPToValList.index(instruction[0].lower())
-                    reg = instruction[1]
-
-                    if isinstance(instruction[2], list):
-                        # long form
-                        val = instruction[2][0]
-
-                        encoded = ((opc & 0xF) << 14) | ((reg & 7) << 11) | (val & 0x7FF)
-
-                        # now save it
-                        byteblocks[label].append(encoded)
-                        byteblocks[label].append(instruction[2][1])
-                    else:
-                        # short form
-                        val = instruction[2]
-
-                        encoded = ((opc & 0xF) << 14) | ((reg & 7) << 11) | (val & 0x7FF)
-
-                        byteblocks[label].append(encoded)
-
-                elif len(instruction) == 2:
-                    print(f"Not yet implemented unary instruction: {instruction}")
-
-        print(byteblocks)
-
-    def parseInstruction(self, command: list):
-        name = command[0].upper()
-
-        # TODO: PSEM and VSEM are both in NoOperandInstructions and
-        # UnaryInstructions. Check how the official assembler handles
-        # this case.
-        if name in {'PSEM', 'VSEM'}:
-            raise NotImplementedError("PSEM and VSEM cannot be used yet.")
-
-        # add this instruction to the current code block
-        if len(command) == 1:
-            if name not in NoOperandInstructions:
-                raise ValueError(f"Unsupported instruction {name!r} (as {command})")
-            instruction = [name]
-
-        elif len(command) == 2 and name not in {"PUSH", "PULL"}:
-            if name not in EffectiveUnary:
-                raise ValueError(f"Unsupported instruction {name!r} (as {command})")
-            instruction = [name, command[1]]
-
-        else:
-            # push/pull translation
-            if name == "PUSH":
-                name = "STOR"
-                command = [name, '[--R7]']
-            elif name == "PULL":
-                name = "LOAD"
-                command = [name, '[R7++]']
-
-            if name not in BinaryInstructions:
-                raise ValueError(f"Unsupported instruction {name!r} (as {command})")
-
-            # binary instruction, followed by a register and address/value/register
-            register = command[1]
-            other = command[2]
-
-            # encode it
-            try:
-                register = self.parser.getRegister(register)
-            except ValueError:
-                raise ValueError(f"Could not parse register {register!r} of command {command!r}")
-            other, longval = self.assembleAddress(other, name)
-            instruction = [name, register, other]
-
-            # long value
-            if longval is not None:
-                instruction[-1] = [other, longval]
-
-        return instruction
-
-    def assembleAddress(self, address, instruction):
-        """
-        Assembles an address
-        """
-        # check input
-        if not self.parser.isValidAddressThing(address):
-            raise ValueError("%s \"%s\" cannot be represented by an addressing mode" % (str(address), instruction))
-
-        # get mode
-        mode = self.parser.getAddressingMode(address)
-
-        # by default, use a short instruction
-        long_ = False
-
-        if mode == base.AddressingMode.VALUE:
-            if instruction in ["psem", "vsem", "stor", "jmp", "jsr"]:
-                raise ValueError("direct values cannot be used with instruction %s" % instruction.upper())
-
-            value = self.parser.getValue(address)
-
-            if value > 254:
-                long_ = True
-                longval = value
-                value = 0xFF
-
-        elif mode == base.AddressingMode.REGISTER:
-            if instruction in ["psem", "vsem", "stor"]:
-                raise ValueError("direct registers cannot be used with instruction %s" % instruction.upper())
-
-            value = self.parser.getRegister(address)
-
-        elif mode == base.AddressingMode.INDEXED:
-            # [reg + disp]
-            reg, dsp = address[0], address[2]
-
-            reg = self.parser.getRegister(reg)
-            dsp = self.parser.getValue(dsp)
-
-            # maybe use long form
-            if dsp > 30:
-                long_ = True
-                longval = disp
-                dsp = 0x1F
-
-            value = (reg << 5) | (dsp & 0x1F)
-
-        elif mode == base.AddressingMode.REG_INDEXED:
-            # [reg0 + reg1]
-            reg0, reg1 = address[0], address[2]
-
-            reg0 = self.parser.getRegister(reg0)
-            reg1 = self.parser.getRegister(reg1)
-
-            value = (reg0 << 5) | reg1
-
-        elif mode == base.AddressingMode.AUTO_POST_INC:
-            # [reg++]
-            reg = address[0][1:-3]
-            reg = self.parser.getRegister(reg)
-
-            value = (reg << 5) | 0x11
-
-        elif mode == base.AddressingMode.AUTO_PRE_DEC:
-            # [--reg]
-            reg = address[0][3:-1]
-            reg = self.parser.getRegister(reg)
-
-            value = (reg << 5) | 0x1F
-
-        elif mode == base.AddressingMode.IND_INDEXED:
-            # [[reg] + dsp]
-            reg, dsp = address[0], address[2]
-            reg = reg0[1:-1]
-
-            reg = self.parser.getRegister(reg)
-            dsp = self.parser.getValue(dsp)
-
-            # maybe use long form
-            if dsp > 30:
-                long_ = True
-                longval = disp
-                dsp = 0x1F
-
-            value = (reg << 5) | (dsp & 0x1F)
-
-        elif mode == base.AddressingMode.IND_REG_INDEXED:
-            # [[reg0] + reg1]
-            reg0, reg1 = address[0], address[2]
-            reg0 = reg0[1:-1]
-
-            reg0 = self.parser.getRegister(reg0)
-            reg1 = self.parser.getRegister(reg1)
-
-            value = (reg0 << 5) | reg1
-
-        if not long_:
-            longval = None
-
-        if mode == 3 or mode == 4:
-            encoded = 5
-        elif mode == 2:
-            encoded = 4
-        else:
-            encoded = mode
-
-        return ((encoded << 8) | (value & 0xFF), longval)

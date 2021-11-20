@@ -34,7 +34,7 @@ def main():
     if len(iofiles) == 1:
         # no output given, so use the name of the input (without extension) and
         # append ".hex"
-        name, ext = os.path.splitext(iofiles[0])
+        name, _ = os.path.splitext(iofiles[0])
         iofiles.append(name + ".hex")
 
     # create the assembler with the input and output file names
@@ -42,9 +42,6 @@ def main():
 
     # assemble
     assembler.assemble()
-
-    # and write to output file
-    #assembler.output()
 
 def showHelp(str_):
     """
@@ -54,7 +51,7 @@ def showHelp(str_):
     str_ += "\n"
     str_ += "arguments:\n"
     str_ += "  -h, --help       shows this help message\n"
-    str_ += "  -v               verbose: also output the original asm file\n"
+    str_ += "  -v               verbose: print the decoded output to console\n"
     str_ += "  infile.asm       the input file to assemble\n"
     str_ += "  outfile.hex      optional: the output file\n"
     print(str_)
