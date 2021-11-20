@@ -309,8 +309,9 @@ class Assembler:
                 raise ValueError(f"Unexpected non-data at {addr}")
 
         # Fill code segment
+        code.size = 0
+
         # TODO: Don't assume code starts at data.size
-        code.size = max(addressed_tokens) - (data.size + 1)
         for addr in range(data.size, max(addressed_tokens)):
 
             if addr not in addressed_tokens:
@@ -325,6 +326,7 @@ class Assembler:
 
             encoding = self.encode_mnemonic(mnemonic, operands)
             code.entries.append(encoding)
+            code.size += len(encoding)
 
             # TODO: Deduce mnemonic and operands from encoding
             if len(encoding) == 2:
