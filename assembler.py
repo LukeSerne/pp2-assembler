@@ -210,7 +210,7 @@ class Assembler:
             else:
                 encoding_str = f"{encoding[0]:05x} {'':5}"
 
-            if self._verbose:
+            if self.verbose:
                 print(f"{address:05x} {encoding_str} {mnemonic:5} {self.operands_to_str(operands)}")
 
         return code, data, stack
