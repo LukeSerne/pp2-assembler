@@ -53,19 +53,21 @@ class Assembler:
             f.write("\n")
 
             # Then data (optional)
-            f.write(f"@D {data.address:05x} {data.size:05x}\n")
+            if data.address is None:
+                f.write(f"@D {data.address:05x} {data.size:05x}\n")
 
-            f.write(" ".join(f"{word:05x}" for (_, word) in data.entries))
+                f.write(" ".join(f"{word:05x}" for (_, word) in data.entries))
 
-            f.write("\n\n")
+                f.write("\n\n")
 
             # Then stack (optional)
-            f.write(f"@S {stack.address:05x} {stack.size:05x}\n")
+            if stack.address is None:
+                f.write(f"@S {stack.address:05x} {stack.size:05x}\n")
 
-            f.write("\n")
+                f.write("\n")
 
             # Then end
-            f.write(".\n\n")
+            f.write(".\n")
 
     def assemble_2(self, tokens: list, aliases: list) -> tuple:
         """
