@@ -478,7 +478,12 @@ class Assembler:
             un_insn = ["JMP", "JSR", "CLRI", "SETI", "PSEM", "VSEM"]
             id_ = un_insn.index(mnemonic)
 
-            result = [(1 << 14) | (id_ << 11) | addressing_encoding[0]]
+            addressing_encoding = self.encode_addressing_mode(operands[0])
+
+            if not addressing_encoding:
+                raise ValueError(f"Invalid addressing mode {operands[0]}")
+
+            result = [(1 << 14) | (id_ << 11) | addressing_encoding[0] & 0x7FF]
 
             if len(addressing_encoding) == 2:
                 result.append(addressing_encoding[1])
