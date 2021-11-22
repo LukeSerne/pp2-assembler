@@ -14,13 +14,71 @@ class Segment:
 
 
 class Parser:
-    def __init__(self, input_):
+    def __init__(self, input_string):
         """
         Initialises the parser
         """
-        self.input = input_
-        self.code = []
-        self.data = []
+        self.input = input_string
+        self.input_pos = 0
+
+    def get_next_term(self, peek: bool = False, extra_delimiters: str = "", match_parentheses: bool = False) -> typing.Optional[str]:
+        """
+        Returns the next non-comment space separated word (or any other delimiter).
+        If peek is set to True, the 'input_pos' will not be advanced. If
+        match_parentheses is set to True, square bracket parentheses will be
+        matched.
+        """
+        pos = self.input_pos
+
+        # Loop to exit comment
+        while True:
+            # Skip until the first non-whitespace character, ie. not one of:
+            # ' ', '\n', '\t', '\r', '\f' and '\v'
+            while pos < len(self.input) and self.input[pos].isspace():
+                pos += 1
+
+            # Return None to signal end of file
+            if pos == len(self.input):
+                if not peek:
+                    self.input_pos = pos
+
+                return None
+
+            if self.input[pos] != ";":
+                break
+
+            pos = 1 + self.input.find("\n", pos)
+
+            if pos == 0:  # No newline found - return None
+                if not peek:
+                    self.input_pos = pos
+
+                return None
+
+        # Find the end of the word by finding the next whitespace character.
+        end_pos = pos
+        nesting = 0
+        while end_pos < len(self.input):
+            if self.input[end_pos] == "[":
+                nesting += 1
+            elif self.input[end_pos] == "]":
+                nesting -= 1
+
+            if (not match_parentheses or nesting == 0) and (self.input[end_pos].isspace() or self.input[end_pos] == ";" or self.input[end_pos] in extra_delimiters):
+                break
+
+            end_pos += 1
+
+        result = self.input[pos:end_pos]
+
+        if self.input[end_pos] in extra_delimiters:
+            end_pos += 1
+
+        # Update the input_pos value
+        if not peek:
+            self.input_pos = end_pos
+
+        return result
 
     def parseSections(self) -> list:
         # process the file line by line
@@ -29,178 +87,164 @@ class Parser:
         tokens = []
 
         # Tokenise based on spaces
-        for line in self.input.split("\n"):
-            if ";" in line:
-                line = line[:line.index(";")]
+        while (term := self.get_next_term()) is not None:
 
-            line = line.strip()
-            if not line:
-                continue
+            if term == "@CODE":
+                if self.get_next_term(peek=True) == "=":
+                    self.get_next_term()  # To consume the '='
 
-            if line.startswith("@"):
-                if "=" in line:
-                    name, value = line.split("=")
-                    name = name.strip()
-                    value = value.strip()
+                    term = self.get_next_term()
+                    address = self.get_value(self.get_next_term())
+                    if address is None:
+                        raise ValueError(f"Expected a number literal after '@CODE =' - got {term!r}")
                 else:
-                    name, value = line, None
+                    address = 0x3ffff
 
-                if name == "@CODE":
-                    segment = "code"
+                tokens.append((base.Token.CODE_SEGMENT_START, address))
+                segment = "code"
 
-                    if value is None:
-                        value = 0x3ffff
-                    else:
-                        value = self.get_value(value)
+            elif term == "@DATA":
+                if self.get_next_term(peek=True) == "=":
+                    self.get_next_term()  # To consume the '='
 
-                    tokens.append((base.Token.CODE_SEGMENT_START, value))
-
-                elif name == "@DATA":
-                    segment = "data"
-
-                    if value is None:
-                        value = 0x3ffff
-                    else:
-                        value = self.getValue(value)
-
-                    tokens.append((base.Token.DATA_SEGMENT_START, value))
-
-                elif name == "@END" and value is None:
-                    break
-                elif name == "@INCLUDE":
-                    raise NotImplementedError("Include statements are not supported.")
-                elif name == "@STACK":
-                    raise NotImplementedError("Stack statements are not supported.")
-                elif name == "@STACKSIZE":
-                    raise NotImplementedError("Stacksize statements are not supported.")
+                    term = self.get_next_term()
+                    address = self.get_value(term)
+                    if address is None:
+                        raise ValueError(f"Expected a number literal after '@DATA =' - got {term!r}")
                 else:
-                    raise ValueError(f"Invalid token {line!r}")
+                    address = 0x3ffff
 
-            elif "EQU" in (x := line.split()):
-                # An EQU alias: [label] EQU [value]
-                if len(x) != 3:
-                    raise ValueError(f"Invalid EQU-statement: Wrong number of operands. {line!r} -> {x}")
+                tokens.append((base.Token.DATA_SEGMENT_START, address))
+                segment = "data"
 
-                label, equ, value = x
-                if equ != "EQU":
-                    raise ValueError(f"Invalid EQU-statement: Wrong position of EQU keyword. {line!r} -> {x}")
+            elif term == "@END":
+                break
+            elif term in {"@STACK", "@STACKSIZE", "@INCLUDE"}:
+                raise NotImplementedError(f"Statement {term} is not supported.")
 
-                aliases[label] = self.get_value(value)
+            elif self.get_next_term(peek=True) == "EQU":
+                # An EQU alias: [term] EQU [value]
+                self.get_next_term()  # To consume the 'EQU'
+                value_term = self.get_next_term()
+                value = self.get_value(value_term)
+
+                if value is None:
+                    raise ValueError(f"Expected a number literal after '{term} EQU' - got {value_term!r}")
+
+                aliases[term] = value
 
             elif segment == "data":
-                # lines are [label] DW [value](,[value])*
-                #        or [label] DS [length]
-                x = line.split(maxsplit=2)
+                # lines are [term]:? DW [value](,[value])*
+                #        or [term]:? DS [length]
 
-                if len(x) != 3:
-                    raise ValueError(f"Invalid data line: {line!r} -> {x}")
-
-                label, op, values = x
+                label = term.removesuffix(":")
+                op = self.get_next_term()
 
                 if op == "DW":
-                    # Define a single word
+                    # Define some words
                     tokens.append((base.Token.LABEL, label))
 
-                    for i, v in enumerate(values.split(",")):
-                        tokens.append((base.Token.DATA, self.get_value(v.strip())))
+                    count = 0
+
+                    while (value := self.get_value(self.get_next_term(peek=True, extra_delimiters=","))) is not None:
+                        self.get_next_term(extra_delimiters=",")  # to consume the value
+                        tokens.append((base.Token.DATA, value))
+                        count += 1
 
                     # Improvement: add sizeof(<label>) as an implicit EQU
-                    aliases[f"sizeof({label})"] = i + 1
+                    aliases[f"sizeof({label})"] = count
+
                 elif op == "DS":
-                    # Define an array
+                    # Define an array ("storage")
                     tokens.append((base.Token.LABEL, label))
-                    size = self.get_value(value.strip())
+                    size = self.get_value(self.get_next_term())
 
                     for _ in range(size):
                         tokens.append((base.Token.DATA, 0))
 
+                    # Improvement: add sizeof(<label>) as an implicit EQU
                     aliases[f"sizeof({label})"] = size
+
+                else:
+                    raise ValueError(f"Unknown data definition type: {op!r}")
 
             elif segment == "code":
                 # check if this is a label
-                if ":" in line:
-                    label_name, after_label = line.split(":")
-                    tokens.append((base.Token.LABEL, label_name))
+                if term.endswith(":"):
+                    label = term.removesuffix(":")
+                    tokens.append((base.Token.LABEL, label))
+                else:
+                    # Mnemonics are case-insensitive
+                    mnemonic = term.upper()
 
-                    # Check if we need to parse an instruction after the colon
-                    after_label = after_label.strip()
-                    if not after_label:
-                        continue
+                    for operands_count in base.Instructions:
+                        if mnemonic in base.Instructions[operands_count]:
+                            break
+                    else:
+                        raise ValueError(f"Unknown mnemonic {term!r} encountered.")
 
-                    line = after_label
+                    operands = []
+                    for i in range(operands_count):
+                        operands.append(self.get_next_term(match_parentheses=True))
 
-                # continue with the instruction
-                try:
-                    mnemonic, operands_str = line.split(maxsplit=1)
+                    parsed_ops = self.parse_operands(operands)
 
-                    # split operands by regex (because of the optional comma)
-                    operands = re.split(r"\s*,?\s+", operands_str)
-                except ValueError:  # There was no space after the mnemonic
-                    mnemonic, operands = line, []
+                    mnemonic, parsed_ops = self.handle_simplified_mnemonics(mnemonic, parsed_ops)
 
-                known_mnemonics = base.Instructions.get(len(operands), None)
+                    expected_types = base.InstructionOperands[mnemonic]
 
-                error_prefix = f"Could not parse {line!r} as code:"
+                    for (got, *_), expected in zip(parsed_ops, expected_types):
+                        if got not in expected:
+                            raise ValueError(f"Invalid operand types. Expected operand types {expected_types}, got {parsed_ops}.")
 
-                if not known_mnemonics:
-                    raise ValueError(f"{error_prefix} Bad number of operands: {operands}.")
-
-                if mnemonic.upper() not in known_mnemonics:
-                    raise ValueError(f"{error_prefix} Unknown mnemonic {mnemonic!r} with {len(operands)} operands.")
-
-                parsed_ops = self.parse_operands(operands)
-
-                # Handle simplified mnemonics
-                if mnemonic.upper() == "RTS":
-                    if parsed_ops:
-                        raise ValueError(f"{error_prefix} RTS instruction takes no operands - got {operands}")
-
-                    mnemonic = "JMP"
-                    parsed_ops = [(base.Token.AM_POST_INC, 7)]
-                elif mnemonic.upper() == "PUSH":
-                    if len(parsed_ops) != 1 or parsed_ops[0][0] != base.Token.AM_REGISTER:
-                        raise ValueError(f"{error_prefix} PUSH instruction takes 1 register operand - got {operands}")
-
-                    mnemonic = "STOR"
-                    parsed_ops = [parsed_ops[0], (base.Token.AM_PRE_DEC, 7)]
-                elif mnemonic.upper() == "PULL":
-                    if len(parsed_ops) != 1 or parsed_ops[0][0] != base.Token.AM_REGISTER:
-                        raise ValueError(f"{error_prefix} LOAD instruction takes 1 register operand - got {operands}")
-
-                    mnemonic = "LOAD"
-                    parsed_ops = [parsed_ops[0], (base.Token.AM_POST_INC, 7)]
-
-                expected_types = base.InstructionOperands[mnemonic.upper()]
-
-                for (got, *_), expected in zip(parsed_ops, expected_types):
-                    if got not in expected:
-                        raise ValueError(f"{error_prefix} Invalid operand types. Expected operand types {expected_types}, got {parsed_ops}.")
-
-                # Add the line to the segment
-                tokens.append((base.Token.MNEMONIC, mnemonic.upper(), parsed_ops))
+                    # Add the line to the segment
+                    tokens.append((base.Token.MNEMONIC, mnemonic, parsed_ops))
 
             else:
-                raise ValueError(f"Text outside segment - segment is {segment}")
+                raise ValueError(f"Term {term!r} outside segment - segment is {segment}")
 
         return tokens, aliases
 
+    def handle_simplified_mnemonics(self, mnemonic: str, parsed_ops: list) -> tuple[str, list]:
+        """
+        This function translates the simplified mnemonic into their full form.
+        """
+        if mnemonic == "RTS":
+            # JMP [SP++] -> JMP [r7++]
+            return "JMP", [(base.Token.AM_POST_INC, 7)]
+
+        if mnemonic == "PUSH":
+            if parsed_ops[0][0] != base.Token.AM_REGISTER:
+                raise ValueError(f"PUSH instruction takes a register operand - got {parsed_ops}")
+
+            # STOR rX, [--SP] -> STOR rX, [--r7]
+            return "STOR", [parsed_ops[0], (base.Token.AM_PRE_DEC, 7)]
+
+        if mnemonic == "PULL":
+            if parsed_ops[0][0] != base.Token.AM_REGISTER:
+                raise ValueError(f"PULL instruction takes a register operand - got {parsed_ops}")
+
+            # LOAD rX, [SP++] -> LOAD rX, [r7++]
+            return "LOAD", [parsed_ops[0], (base.Token.AM_POST_INC, 7)]
+
+        return mnemonic, parsed_ops
 
     def parse_operands(self, operands: list[str]) -> list[typing.Union[tuple[base.Token, typing.Union[int, str]], tuple[base.Token, int, int]]]:
         """
         Given a list of operands, returns a list of tokenised operands.
         """
 
-        value = r"((?:-?[0-9]+)|(?:#[0-9a-fA-F]+)|(?:%[01]+)|(?:'..?')|(?:\"..?\"))"
+        value_or_label = r"((?:-?\s*[0-9]+)|(?:\$[0-9a-fA-F]+)|(?:%[01]+)|(?:'..?')|(?:\"..?\")|(?:[a-zA-Z0-9_]+))"
         register = r"((?:[rR][0-7])|SP|GB)"
 
-        value_re = re.compile(value)
+        value_re = re.compile(value_or_label)
         register_re = re.compile(register)
 
-        indexed_re = re.compile(r"\s*".join([r"\[", register, r"\+", value, r"\]"]))
+        indexed_re = re.compile(r"\s*".join([r"\[", register, r"[\+-]", value_or_label, r"\]"]))
         reg_indexed_re = re.compile(r"\s*".join([r"\[", register, r"\+", register, r"\]"]))
         post_inc_re = re.compile(r"\s*".join([r"\[", register, r"\+\+", r"\]"]))
         pre_dec_re = re.compile(r"\s*".join([r"\[", r"--", register, r"\]"]))
-        ind_indexed_re = re.compile(r"\s*".join([r"\[", r"\[", register, r"\]", r"\+", value, r"\]"]))
+        ind_indexed_re = re.compile(r"\s*".join([r"\[", r"\[", register, r"\]", r"[\+-]", value_or_label, r"\]"]))
         ind_reg_indexed_re = re.compile(r"\s*".join([r"\[", r"\[", register, r"\]", r"\+", register, r"\]"]))
 
         tokens = []
@@ -208,198 +252,69 @@ class Parser:
         for operand in operands:
             name = operand.strip()
 
-            if value_re.match(name):
-                n = self.get_value(name)
-
-                tokens.append((base.Token.AM_VALUE, n))
-            elif register_re.match(name):
+            if register_re.fullmatch(name):
                 n = self.get_reg(name)
 
                 tokens.append((base.Token.AM_REGISTER, n))
-            elif (m := indexed_re.match(name)):
-                reg, disp = m.groups()
-
-                reg = self.get_reg(reg)
-                disp = self.get_value(disp)
-
-                tokens.append((base.Token.AM_INDEXED, reg, disp))
-            elif (m := reg_indexed_re.match(name)):
+            elif (m := reg_indexed_re.fullmatch(name)):
                 reg0, reg1 = m.groups()
 
                 reg0 = self.get_reg(reg0)
                 reg1 = self.get_reg(reg1)
 
                 tokens.append((base.Token.AM_REG_INDEXED, reg0, reg1))
-            elif (m := post_inc_re.match(name)):
+            elif (m := indexed_re.fullmatch(name)):
+                reg, disp = m.groups()
+
+                reg = self.get_reg(reg)
+                res = self.get_value(disp)
+
+                # If disp is a label, it cannot be resolved, so keep the string
+                if res is not None:
+                    disp = res
+
+                tokens.append((base.Token.AM_INDEXED, reg, disp))
+            elif (m := post_inc_re.fullmatch(name)):
                 reg, = m.groups()
                 reg = self.get_reg(reg)
 
                 tokens.append((base.Token.AM_POST_INC, reg))
-            elif (m := pre_dec_re.match(name)):
+            elif (m := pre_dec_re.fullmatch(name)):
                 reg, = m.groups()
                 reg = self.get_reg(reg)
 
                 tokens.append((base.Token.AM_PRE_DEC, reg))
-            elif (m := ind_indexed_re.match(name)):
+            elif (m := ind_indexed_re.fullmatch(name)):
                 reg, disp = m.groups()
 
                 reg = self.get_reg(reg)
-                disp = self.get_value(disp)
+                res = self.get_value(disp)
+
+                # If disp is a label, it cannot be resolved, so keep the string
+                if res is not None:
+                    disp = res
 
                 tokens.append((base.Token.AM_IND_INDEXED, reg, disp))
-            elif (m := ind_reg_indexed_re.match(name)):
+            elif (m := ind_reg_indexed_re.fullmatch(name)):
                 reg0, reg1 = m.groups()
 
                 reg0 = self.get_reg(reg0)
                 reg1 = self.get_reg(reg1)
 
                 tokens.append((base.Token.AM_IND_REG_INDEXED, reg0, reg1))
+            elif value_re.fullmatch(name):
+                n = self.get_value(name)
+
+                if n is not None:
+                    tokens.append((base.Token.AM_VALUE, n))
+                else:
+                    tokens.append((base.Token.AM_LABEL, name))
+
             else:  # must be a label
-                # TODO: Maybe do some extra checks here?
+                print(f"Warning: Unknown operand thing: {name!r} - assuming it's a label")
                 tokens.append((base.Token.AM_LABEL, name))
 
         return tokens
-
-
-
-        # for line in self.input:
-        #     # ignore everything after ;
-        #     line = line.split(';')[0]
-
-        #     # split line into tokens separated by whitespace, be careful, because
-        #     # we don't want any spaces inside [] to be split. So, first split on
-        #     # [
-        #     tokens = line.split('[')
-        #     if len(tokens) > 1:
-        #         ind = tokens[1].split('+')
-
-        #         # strip everything after ]
-        #         ind[-1] = ind[-1].split(']')[0]
-
-        #         if ind:
-        #             # a + was found and removed, so add it back in
-        #             ind = [ind[0].rstrip(), '+', ind[1].lstrip()]
-
-        #         tokens = tokens[0].split()
-        #         tokens.append(ind)
-        #     else:
-        #         tokens = tokens[0].split()
-
-        #     if '@CODE' in tokens:
-        #         if segment == 'code':
-        #             raise ValueError('CODE segment can only be started once')
-
-        #         i = tokens.index('@CODE')
-
-        #         if i + 1 < len(tokens):
-        #             addr = self.getValue(tokens[i + 1])
-        #         else:
-        #             addr = 0x3ffff
-
-        #         # length is to be calculated later
-        #         len_ = None
-        #         self.code = [['@C', addr, len_]]
-
-        #         segment = 'code'
-
-        #     elif '@DATA' in tokens:
-        #         if segment == 'data':
-        #             raise ValueError('DATA segment can only be started once')
-
-        #         i = tokens.index('@DATA')
-
-        #         if i + 1 < len(tokens):
-        #             addr = self.getValue(tokens[i + 1])
-        #         else:
-        #             addr = 0x3ffff
-
-        #         # length is to be calculated later
-        #         len_ = None
-        #         self.data = [['@D', addr, len_]]
-        #         address = 0
-        #         curdatapoint = -1
-        #         defining = None
-
-        #         segment = 'data'
-
-        #     elif '@END' in tokens:
-        #         break
-
-        #     elif '@INCLUDE' in tokens:
-        #         raise NotImplementedError("Include statements are not yet supported.")
-
-        #     elif tokens:
-        #         if segment == 'data':
-
-        #             # first token could be a new and unique name
-        #             if tokens[0] != curdatapoint:
-        #                 name = tokens[0].strip()[:-1]
-
-        #                 assert name not in self.datapoints
-
-        #                 self.datapoints[name] = address
-        #                 curdatapoint = name
-        #                 tokens = tokens[1:]
-
-        #             for token in tokens:
-        #                 if defining == 'array':
-        #                     if tokens[i][-1] == ',':
-        #                         num = self.getValue(tokens[i][:-1])
-        #                     else:
-        #                         num = self.getValue(tokens[i])
-        #                         defining = None
-
-        #                     self.data += [0] * num
-        #                     address += num
-
-        #                 elif defining == 'word':
-        #                     if tokens[i][-1] == ',':
-        #                         self.data.append(self.getValue(tokens[i][:-1]))
-        #                     else:
-        #                         self.data.append(self.getValue(tokens[i]))
-        #                         defining = None
-
-        #                 elif tokens[i] == 'DS':
-        #                     defining = 'array'
-
-        #                 elif tokens[i] == 'DW':
-        #                     defining = 'word'
-
-        #         elif segment == 'code':
-        #             if 'EQU' in tokens:
-        #                 i = tokens.index('EQU')
-
-        #                 # EQU cannot be the first or last element in tokens
-        #                 assert 0 < i < len(tokens) - 1
-
-        #                 name = tokens[i - 1].strip()
-        #                 value = self.getValue(tokens[i + 1])
-
-        #                 # EQU cannot use a name that's already taken
-        #                 assert name not in self.aliases
-
-        #                 self.aliases[name] = value
-        #             else:
-        #                 self.code.append(tokens)
-        #         else:
-        #             raise ValueError("No active segment")
-
-        # # replace aliases
-        # for i, instruction in enumerate(self.code):
-        #     instruction = self.code[i]
-
-        #     for j, operand in enumerate(instruction):
-        #         if isinstance(operand, list):
-        #             for k in range(len(operand)):
-        #                 if operand[k] in self.aliases:
-        #                     self.code[i][j][k] = self.aliases[operand[k]]
-        #                 elif operand[k] in self.datapoints:
-        #                     self.code[i][j][k] = self.datapoints[operand[k]]
-
-        #         elif operand in self.aliases:
-        #             self.code[i][j] = self.aliases[operand]
-        #         elif operand in self.datapoints:
-        #             self.code[i][j] = self.datapoints[operand]
 
     def get_reg(self, reg_str: str) -> int:
         """
@@ -418,29 +333,33 @@ class Parser:
 
         return int(n)
 
-    def get_value(self, str_value: str) -> int:
+    def get_value(self, str_value: str) -> typing.Optional[int]:
         """
         Converts a literal value to an integer. See section 4.1.
+        Returns None on failure.
         """
-        if str_value.startswith("%"):  # binary
-            _, sign_bit, *value_part = str_value
-            full_value = "".join(value_part).rjust(18, sign_bit)
+        try:
+            if str_value.startswith("%"):  # binary
+                _, sign_bit, *value_part = str_value
+                full_value = "".join(value_part).rjust(18, sign_bit)
 
-            return int(full_value, 2) % 2 ** 18
-        elif str_value.startswith("$"):  # hexadecimal
-            _, full_value = str_value
+                return int(full_value, 2) % 2 ** 18
+            elif str_value.startswith("$"):  # hexadecimal
+                full_value = str_value[1:]
 
-            return int(full_value, 16) % 2 ** 18
-        elif str_value.startswith("'") or str_value.startswith('"'):  # ascii
-            _, *chars, _ = str_value
+                return int(full_value, 16) % 2 ** 18
+            elif str_value.startswith("'") or str_value.startswith('"'):  # ascii
+                _, *chars, _ = str_value
 
-            # no need for modular reduction, since these values can never exceed
-            # 2 ** 18
-            if len(chars) == 1:
-                return ord(chars[0])
-            elif len(chars) != 2:
-                raise ValueError(f"Cannot parse value {str_value!r} as ASCII literal: Wrong number of characters ({len(chars)}) - must be 1 or 2.")
+                # no need for modular reduction, since these values can never exceed
+                # 2 ** 18
+                if len(chars) == 1:
+                    return ord(chars[0])
+                elif len(chars) != 2:
+                    raise ValueError(f"Cannot parse value {str_value!r} as ASCII literal: Wrong number of characters ({len(chars)}) - must be 1 or 2.")
 
-            return (ord(chars[1]) << 8) | ord(chars[0])
-        else:  # decimal
-            return int(str_value, 10) % 2 ** 18
+                return (ord(chars[1]) << 8) | ord(chars[0])
+            else:  # decimal
+                return int(str_value, 10) % 2 ** 18
+        except ValueError:
+            return None
